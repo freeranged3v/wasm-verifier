@@ -169,12 +169,6 @@ impl VerifyingKey {
 // I: Optimization idea: AOT compilation and caching the native code
 #[no_mangle]
 pub extern "C" fn entrypoint() {
-    // I: Verifying key is built once during deployment, so exlude it in benchmarking ideally
-
-    // Q: From what information, does the verifying key get built from?
-    // Q: in darkfi
-    // Q: in wasm verifier
-
     let k = 4;
     let circuit = MyCircuit {
         a: Value::known(pallas::Base::from(69)),
@@ -190,18 +184,12 @@ pub extern "C" fn entrypoint() {
     let proof_bytes = include_bytes!("../proof.bin");
     let proof_vec = proof_bytes.to_vec();
     let proof = Proof::new(proof_vec);
-    let _ = proof.verify(&vk, &public_inputs);
+    assert!(proof.verify(&vk, &public_inputs).is_ok());
 }
 
 // Same work, but do not verify
 #[no_mangle]
 pub extern "C" fn entrypoint_no_verify() {
-    // I: Verifying key is built once during deployment, so exlude it in benchmarking ideally
-
-    // Q: From what information, does the verifying key get built from?
-    // Q: in darkfi
-    // Q: in wasm verifier
-
     let k = 4;
     let circuit = MyCircuit {
         a: Value::known(pallas::Base::from(69)),
@@ -210,10 +198,32 @@ pub extern "C" fn entrypoint_no_verify() {
     let _public_inputs = vec![
         pallas::Base::from(69 + 42),
         pallas::Base::from(69 * 42),
-        pallas::Base::from(69 - 42),
+        pallas::Base::from(60 - 42),
     ];
     let _vk = VerifyingKey::build(k, &circuit);
 
+    // include_bytes has no runtime cost: https://stackoverflow.com/a/61625729
+    let proof_bytes = include_bytes!("../proof.bin");
+    let proof_vec = proof_bytes.to_vec();
+    let _ = Proof::new(proof_vec);
+    // let _ = proof.verify(&vk, &public_inputs);
+}
+
+#[no_mangle]
+pub extern "C" fn entrypoint_no_verify_no_vk() {
+    let _k = 4;
+    let _circuit = MyCircuit {
+        a: Value::known(pallas::Base::from(69)),
+        b: Value::known(pallas::Base::from(42)),
+    };
+    let _public_inputs = vec![
+        pallas::Base::from(69 + 42),
+        pallas::Base::from(69 * 42),
+        pallas::Base::from(60 - 42),
+    ];
+    // let _vk = VerifyingKey::build(k, &circuit);
+
+    // include_bytes has no runtime cost: https://stackoverflow.com/a/61625729
     let proof_bytes = include_bytes!("../proof.bin");
     let proof_vec = proof_bytes.to_vec();
     let _ = Proof::new(proof_vec);
@@ -225,7 +235,7 @@ pub extern "C" fn entrypoint_no_verify() {
 #[cfg(all(test, feature = "gen_proof"))]
 mod tests {
     use super::*;
-    use halo2_proofs::dev::CircuitLayout;
+    use halo2_proofs::dev::MockProver;
     use halo2_proofs::transcript::Blake2bWrite;
     use rand::rngs::OsRng;
     use rand::RngCore;
@@ -274,11 +284,13 @@ mod tests {
             b: Value::known(pallas::Base::from(42)),
         };
 
-        use plotters::prelude::*;
-        let root = BitMapBackend::new("target/layout.png", (3840, 2160)).into_drawing_area();
-        root.fill(&WHITE).unwrap();
-        let root = root.titled("Circuit Layout", ("sans-serif", 60)).unwrap();
-        CircuitLayout::default().render(4, &circuit, &root).unwrap();
+        // Make layout diagram for the circuit
+        // use halo2_proofs::dev::CircuitLayout;
+        // use plotters::prelude::*;
+        // let root = BitMapBackend::new("target/layout.png", (3840, 2160)).into_drawing_area();
+        // root.fill(&WHITE).unwrap();
+        // let root = root.titled("Circuit Layout", ("sans-serif", 60)).unwrap();
+        // CircuitLayout::default().render(4, &circuit, &root).unwrap();
 
         let k = 4;
 
@@ -288,17 +300,19 @@ mod tests {
             pallas::Base::from(69 * 42),
             pallas::Base::from(69 - 42),
         ];
-        let proof = Proof::create(pk, &[circuit.clone()], &public_inputs, &mut OsRng).unwrap();
 
+        // Alternative API
+        // let prover = MockProver::run(k, &circuit, vec![public_inputs.clone()]).unwrap();
+        // prover.assert_satisfied();
+
+        let proof = Proof::create(pk, &[circuit.clone()], &public_inputs, &mut OsRng).unwrap();
         let vk = super::VerifyingKey::build(k, &circuit);
-        let _ = proof.verify(&vk, &public_inputs);
+        assert!(proof.verify(&vk, &public_inputs).is_ok());
 
         println!("Proof size [{} kB]", proof.as_ref().len() as f64 / 1024.0);
 
         let mut file = std::fs::File::create("proof.bin").unwrap();
-
         use std::io::{Read, Write};
-
         file.write_all(proof.as_ref());
     }
 }
@@ -306,33 +320,56 @@ mod tests {
 #[cfg(all(test, feature = "wasm_verify"))]
 mod tests {
     use std::time::Instant;
+    use wasmer_compiler_singlepass::Singlepass;
 
     #[test]
     fn test_wasm_verify() {
         use wasmer::FunctionEnv;
         use wasmer::{imports, Instance, Module, Store};
-        let mut store = Store::default();
+
+        let now = Instant::now();
+        /////////// Basically setting up the wasm runtime /////////
+
+        // IMPORTANT: Singlepass to match darkfi. Singlepass compiles under 500ms at the cost longer runtime
+        let compiler_config = Singlepass::new();
+        let mut store = Store::new(compiler_config);
+
+        // let mut store = Store::default();
         let _env = FunctionEnv::new(&mut store, ());
         let wasm_bytes = include_bytes!("../wasm_verifier_arithmetic.wasm");
         let module = Module::new(&store, wasm_bytes).unwrap();
         let import_object = imports! {};
         let instance = Instance::new(&mut store, &module, &import_object).unwrap();
-
-        let now = Instant::now();
         // Why does darkfi runtime compile wasm everytime, instead of compiling once?
         let entrypoint = instance.exports.get_function("entrypoint").unwrap();
+        println!("wasm setup [{:?}ms]", now.elapsed().as_millis());
+
+        let now = Instant::now();
         let _answer = entrypoint.call(&mut store, &[]).unwrap().to_vec();
         println!(
-            "Wasm set up and verifed in [{:?}ms]",
+            "wasm built vk and verifed in [{:?}ms]",
             now.elapsed().as_millis()
         );
 
-        let now = Instant::now();
         let entrypoint = instance
             .exports
             .get_function("entrypoint_no_verify")
             .unwrap();
+
+        let now = Instant::now();
         let _answer = entrypoint.call(&mut store, &[]).unwrap().to_vec();
-        println!("Wasm set up in [{:?}ms]", now.elapsed().as_millis());
+        println!("Wasm built vk in [{:?}ms]", now.elapsed().as_millis());
+
+        let entrypoint = instance
+            .exports
+            .get_function("entrypoint_no_verify_no_vk")
+            .unwrap();
+
+        let now = Instant::now();
+        let _answer = entrypoint.call(&mut store, &[]).unwrap().to_vec();
+        println!(
+            "Wasm runs without building vk in [{:?}ms]",
+            now.elapsed().as_millis()
+        );
     }
 }

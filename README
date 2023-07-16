@@ -1,0 +1,10 @@
+% make wasm-verify
+running 1 test
+wasm setup [279ms]
+wasm built vk and verifed in [247ms]
+Wasm built vk in [209ms]
+Wasm runs without building vk in [0ms]
+test tests::test_wasm_verify ... ok
+
+This roungly means, spinning up a wasm runtime, and execute a halo2 verifier to verify a arithmetic proof costs about: 279ms + (247 - 209)ms = 317ms
+(TODO: improve benchmarking)
