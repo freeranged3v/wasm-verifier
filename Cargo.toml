@@ -1,0 +1,47 @@
+[package]
+
+name = "wasm-verifier-arithmetic"
+
+version = "0.1.0"
+
+edition = "2021"
+
+[lib]
+
+name = "wasm_verifier_arithmetic"
+
+path = "src/lib.rs"
+
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+
+# Turn off halo2_proof's default batch mode
+# Uncomment to generate graph
+# halo2_proofs = { version = "0.3.0", default-features = false, features = [ "dev-graph" ] }
+halo2_proofs = { version = "0.3.0", default-features = false }   
+
+wasmer = { version = "3.1.1", optional = true }
+
+# We need to disable random using "custom" which makes the crate a noop
+# because the wasm32-unknown-unknown target is not compatible with randomness
+rand = { version = "0.8.5", optional = true }
+
+plotters = { version = "0.3.0", optional = true }
+
+[features]
+
+gen_proof = ["rand", "plotters"]
+
+wasm_verify = ["wasmer"]
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+
+getrandom = { version = "0.2", features = ["custom"] }
+
+# patching: https://doc.rust-lang.org/cargo/reference/overriding-dependencies.html#testing-a-bugfix
+[patch.crates-io]
+
+halo2_proofs = { git="https://github.com/parazyd/halo2", branch="v3" }
+
+halo2_gadgets = { git="https://github.com/parazyd/halo2", branch="v3" }
